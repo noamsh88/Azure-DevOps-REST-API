@@ -1,26 +1,52 @@
-############################################################################################
-#Script is getting TFS Service Endpoints of required Team Project and write it to JSON file#
-############################################################################################
-Param
-(
-    [Parameter(HelpMessage="Azure DevOps - API Root.")]
-    [ValidateNotNullOrEmpty()]
-    [string]$API_Root="",  # Azure DevOps collection URL
+# Script get build name and return its latest build artifacts (directory path or URL) using Azure DevOps REST APIs
+$buildName = $args[0]
 
-    [Parameter(HelpMessage="Azure DevOps - Team Project.")]
-    [ValidateNotNullOrEmpty()]
-    [string]$Team_Project="" # Project name under collection
-)
+# Script Configurations
+[string]$API_Root = "" # Azure DevOps collection URI
+[string]$Team_Project = "" # Collection name
 
-$Date = Get-Date -UFormat "%Y-%m-%d@%H-%M-%S"
-$OutputJsonFile="$(pwd)\ServiceEndpoints_$Team_Project_$Date.json"
 
-# Definitions - List
-# GET https://dev.azure.com/{organization}/{project}/_apis/build/definitions?name={name}&repositoryId={repositoryId}&repositoryType={repositoryType}&queryOrder={queryOrder}&$top={$top}&continuationToken={continuationToken}&minMetricsTime={minMetricsTime}&definitionIds={definitionIds}&path={path}&builtAfter={builtAfter}&notBuiltAfter={notBuiltAfter}&includeAllProperties={includeAllProperties}&includeLatestBuilds={includeLatestBuilds}&taskIdFilter={taskIdFilter}&processType={processType}&yamlFilename={yamlFilename}&api-version=5.1
-$RestAPI = "$API_Root/$Team_Project/_apis/serviceendpoint/endpoints?api-version=5.0-preview.2"
+# Validate buildName variable value not null
+if (!$buildName) {
+  $scriptName = $MyInvocation.MyCommand.Name
+  Write-Host "Usage:"
+  Write-Host "$scriptName <Build Name> "
+  Write-Host "e.g."
+  Write-Host ".\$scriptName pipeline_name"
+  exit 1
+}
 
-$ServiceEndpoints = Invoke-RestMethod -Uri $RestAPI -Method Get -UseDefaultCredentials -ContentType "application/json" -Headers @{Authorization=("Basic {0}" -f $base64AuthInfo)}
-$ServiceEndpointsContent = $ServiceEndpoints.value | ConvertTo-Json
+# Get latest build ID by build name 
+#$latestBuildInfo = Execute-RestMethod -Rest_Api "$API_Root/$Team_Project/_apis/build/latest/"$buildName"?api-version=5.1-preview.1" #-UseDefaultCredentials
+$Rest_Api = "$API_Root/$Team_Project/_apis/build/latest/$($buildName)?api-version=5.1-preview.1"
+$latestBuildInfo = Invoke-RestMethod -Uri $Rest_Api -Method GET -UseDefaultCredentials -ContentType "application/json"
+Write-Host "Latest Build Info: `n $latestBuildInfo `n "
 
-Write-Host $ServiceEndpointsContent
-$ServiceEndpointsContent | Out-File -FilePath $OutputJsonFile -Append
+$latestBuildID = $latestBuildInfo.id
+Write-Host "Build ID: $latestBuildID"
+
+# Get latest build Artifacts info
+# GET https://dev.azure.com/{organization}/{project}/_apis/build/builds/{buildId}/artifacts?api-version=5.1
+$Rest_Api = "$API_Root/$Team_Project/_apis/build/builds/$($latestBuildID)/artifacts?api-version=5.1"
+#Write-Host "`n collect info from: $Rest_Api"
+$buildArtifactsInfo = Invoke-RestMethod -Uri $Rest_Api -Method GET -UseDefaultCredentials -ContentType "application/json"
+Write-Host "`n Latest $buildName Build Artifacts info: `n  $($buildArtifactsInfo.value.resource) `n"
+
+$buildArtifactsPath = $buildArtifactsInfo.value.resource.downloadUrl
+
+# Check build artifact storage type on Azure DevOps (file or URL)
+if ($buildArtifactsPath -like "*file*" ){
+   # cut "file:" string to remain with clean artifacts path
+  [String]$buildArtifactsPath = $buildArtifactsPath.substring(5)
+  }
+elseif ($buildArtifactsPath -like "*http*" ){
+  $artifactStorageType = "URL"
+}
+
+
+# Print Build URL
+Write-Host "Artifacts Storage Type: $artifactStorageType"  # (file or URL)
+Write-Host "Build Artifacts Path: $buildArtifactsPath"
+
+# Output variable to Azure DevOps pipeline
+Write-Host "##vso[task.setvariable variable=BUILD_ARTIFACTS_PATH;]$buildArtifactsPath"
